@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { resolve as resolvePath } from "node:path";
+import { resolve as resolvePath, join } from "node:path";
 import { homedir } from "node:os";
+import { readdirSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,6 +21,8 @@ export type SecurityPolicy = {
   maxConcurrent: number;
   /** Blocked permission modes (e.g. ["full"]). */
   blockedPermissionModes: string[];
+  /** OAuth token for Claude Code authentication. */
+  claudeOauthToken?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -51,23 +54,27 @@ export function getSecurityPolicy(): Readonly<SecurityPolicy> {
 // Path validation — resolve then check prefix match against allowlist
 // ---------------------------------------------------------------------------
 
-export function validateWorkdir(workdir: string | undefined): string | null {
-  if (!workdir) return null; // will use process.cwd(), caller decides if ok
+/**
+ * Validate and resolve workdir. Returns { error } on rejection,
+ * or { resolved } with the absolute path (~ expanded) on success.
+ */
+export function validateWorkdir(workdir: string | undefined): { resolved?: string; error?: string } {
+  if (!workdir) return {}; // will use process.cwd()
 
   const resolved = resolvePath(workdir.replace(/^~/, homedir()));
 
   if (_policy.allowedPaths.length === 0) {
-    return `workdir rejected: no allowedPaths configured in plugin security policy`;
+    return { error: `workdir rejected: no allowedPaths configured in plugin security policy` };
   }
 
   const allowed = _policy.allowedPaths.some(
     (prefix) => resolved === prefix || resolved.startsWith(prefix + "/"),
   );
   if (!allowed) {
-    return `workdir rejected: "${resolved}" is not under any allowed path [${_policy.allowedPaths.join(", ")}]`;
+    return { error: `workdir rejected: "${resolved}" is not under any allowed path [${_policy.allowedPaths.join(", ")}]` };
   }
 
-  return null; // ok
+  return { resolved };
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +121,31 @@ function releaseSlot(): void {
 // ---------------------------------------------------------------------------
 
 export function resolveClaudeBin(): string {
+  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+
+  // Prefer symlink at ~/bin/claude (no spaces in path, survives upgrades).
+  // Create with: ln -sf "/Users/.../Claude/claude-code/<ver>/claude" ~/bin/claude
+  const symlink = join(homedir(), "bin", "claude");
+  try {
+    const { statSync } = require("node:fs") as typeof import("node:fs");
+    if (statSync(symlink).isFile() || statSync(symlink).isSymbolicLink()) {
+      return symlink;
+    }
+  } catch {
+    // not found — try versioned path
+  }
+
+  // Claude Desktop installs the binary under a versioned directory.
+  const base = join(homedir(), "Library", "Application Support", "Claude", "claude-code");
+  try {
+    const versions = readdirSync(base).sort();
+    if (versions.length > 0) {
+      return join(base, versions[versions.length - 1], "claude");
+    }
+  } catch {
+    // directory doesn't exist — fall through
+  }
+
   return "claude";
 }
 
@@ -130,9 +162,14 @@ export async function runClaude(params: {
 
   try {
     return await new Promise((resolve, reject) => {
+      const authEnv: Record<string, string> = {};
+      if (_policy.claudeOauthToken) {
+        authEnv.CLAUDE_CODE_OAUTH_TOKEN = _policy.claudeOauthToken;
+      }
+
       const proc = spawn(resolveClaudeBin(), args, {
         cwd: cwd || process.cwd(),
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...authEnv, ...env },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: timeoutMs,
       });

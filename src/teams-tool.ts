@@ -38,17 +38,17 @@ export function createClaudeTeamsTool() {
         return errorResult("task is required");
       }
 
-      const wdErr = validateWorkdir(workdir);
-      if (wdErr) return errorResult(wdErr);
+      const wd = validateWorkdir(workdir);
+      if (wd.error) return errorResult(wd.error);
 
       const timeoutMs = clampTimeout(timeout, 600);
-      const args = ["--print", task.trim()];
+      const args = ["--print", "--permission-mode", "bypassPermissions", task.trim()];
       const env: Record<string, string> = {
         CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
       };
 
       try {
-        const result = await runClaude({ args, cwd: workdir, env, timeoutMs });
+        const result = await runClaude({ args, cwd: wd.resolved, env, timeoutMs });
 
         if (result.exitCode !== 0) {
           const errMsg = result.stderr.trim() || result.stdout.trim() || "Claude Code exited with non-zero code";

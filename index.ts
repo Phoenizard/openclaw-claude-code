@@ -31,6 +31,10 @@ const plugin = {
           items: { type: "string" },
           description: 'Permission modes to block (default ["full"]).',
         },
+        claudeOauthToken: {
+          type: "string",
+          description: "OAuth token for Claude Code authentication.",
+        },
       },
     },
   },
@@ -42,12 +46,14 @@ const plugin = {
       maxTimeoutSecs: (cfg.maxTimeoutSecs as number | undefined) ?? 600,
       maxConcurrent: (cfg.maxConcurrent as number | undefined) ?? 2,
       blockedPermissionModes: (cfg.blockedPermissionModes as string[] | undefined) ?? ["full"],
+      claudeOauthToken: cfg.claudeOauthToken as string | undefined,
     });
 
     api.logger.info(
       `[claude-code] Security policy: allowedPaths=${JSON.stringify(cfg.allowedPaths ?? [])}, ` +
       `maxTimeout=${cfg.maxTimeoutSecs ?? 600}s, maxConcurrent=${cfg.maxConcurrent ?? 2}, ` +
-      `blockedModes=${JSON.stringify(cfg.blockedPermissionModes ?? ["full"])}`,
+      `blockedModes=${JSON.stringify(cfg.blockedPermissionModes ?? ["full"])}, ` +
+      `oauthToken=${cfg.claudeOauthToken ? "configured" : "NOT SET"}`,
     );
 
     api.registerTool(createClaudePlanTool(), { name: "claude_plan" });

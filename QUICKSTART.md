@@ -32,7 +32,6 @@ openclaw onboard --install-daemon
 ```
 
 这会：
-
 1. 创建配置文件 `~/.openclaw/openclaw.json`
 2. 配置模型 provider（选择 Anthropic，使用 OAuth 或 API Key）
 3. 将 Gateway 安装为系统服务（launchd/systemd）
@@ -274,6 +273,47 @@ bot 会调用 `claude --print <task>` 来执行编码任务（可以读写文件
 ```
 
 bot 会启用 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 让多个 Claude Code agent 并行工作。
+
+### 测试 4：Plan → 审核 → Exec 两阶段工作流
+
+这是推荐的实际开发工作流：先让 Claude Code 在只读模式下制定方案，在 Slack 中审核后再执行。
+
+**第一步：Plan（只读分析，不修改任何文件）**
+
+```
+用 claude_plan 分析 ~/Workplace/BotSpace/test 并制定以下任务的实现计划：
+
+创建一个简单的全连接神经网络项目，要求：
+1. 使用 Python + PyTorch
+2. 网络结构：输入层(1) -> 隐藏层(32, ReLU) -> 隐藏层(32, ReLU) -> 输出层(1)
+3. 生成人造多项式数据集：y = 3x² - x + noise
+4. 训练回归模型并输出 loss 曲线
+5. 最终打印预测值 vs 真实值的对比
+
+请输出完整的文件结构和每个文件的实现方案。
+```
+
+bot 会在 Slack 中展示 Claude Code 的完整计划，包括文件结构和实现方案。**此时没有任何文件被创建或修改。**
+
+**第二步：在 Slack 中审核方案**
+
+阅读 bot 返回的计划，确认方案合理（文件结构、网络架构、数据生成方式等）。如果需要调整，可以再发一次 plan 请求修改需求。
+
+**第三步：Exec（确认后执行）**
+
+```
+用 claude_exec 在 ~/Workplace/BotSpace/test 中执行刚才的计划，创建完整的神经网络回归项目。
+```
+
+bot 会调用 Claude Code 创建所有文件并实现代码。完成后可以在本地运行验证：
+
+```bash
+cd ~/Workplace/BotSpace/test
+pip install torch matplotlib  # 如果还没安装
+python main.py
+```
+
+预期输出：训练过程的 loss 下降日志，以及预测值 vs 真实值的对比结果。
 
 ---
 

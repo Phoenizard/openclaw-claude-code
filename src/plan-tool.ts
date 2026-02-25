@@ -36,14 +36,14 @@ export function createClaudePlanTool() {
         return errorResult("task is required");
       }
 
-      const wdErr = validateWorkdir(workdir);
-      if (wdErr) return errorResult(wdErr);
+      const wd = validateWorkdir(workdir);
+      if (wd.error) return errorResult(wd.error);
 
       const timeoutMs = clampTimeout(timeout, 300);
       const args = ["--permission-mode", "plan", "--print", task.trim()];
 
       try {
-        const result = await runClaude({ args, cwd: workdir, timeoutMs });
+        const result = await runClaude({ args, cwd: wd.resolved, timeoutMs });
 
         if (result.exitCode !== 0) {
           const errMsg = result.stderr.trim() || result.stdout.trim() || "Claude Code exited with non-zero code";

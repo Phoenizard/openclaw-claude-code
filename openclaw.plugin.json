@@ -23,6 +23,10 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "Permission modes to block (default [\"full\"])."
+      },
+      "claudeOauthToken": {
+        "type": "string",
+        "description": "OAuth token for Claude Code authentication."
       }
     }
   }
