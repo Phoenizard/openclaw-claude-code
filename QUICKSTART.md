@@ -32,6 +32,7 @@ openclaw onboard --install-daemon
 ```
 
 这会：
+
 1. 创建配置文件 `~/.openclaw/openclaw.json`
 2. 配置模型 provider（选择 Anthropic，使用 OAuth 或 API Key）
 3. 将 Gateway 安装为系统服务（launchd/systemd）
