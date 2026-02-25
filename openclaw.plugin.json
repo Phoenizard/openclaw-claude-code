@@ -1,0 +1,10 @@
+{
+  "id": "claude-code",
+  "name": "Claude Code",
+  "description": "Claude Code integration with plan, exec, and teams modes",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
