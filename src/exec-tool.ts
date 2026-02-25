@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { runClaude, textResult, errorResult } from "./shared.js";
+import { runClaude, textResult, errorResult, validateWorkdir, validatePermissionMode, clampTimeout } from "./shared.js";
 import type { ClaudeResult } from "./shared.js";
 
 const ExecToolSchema = Type.Object({
@@ -14,12 +14,12 @@ const ExecToolSchema = Type.Object({
   permission_mode: Type.Optional(
     Type.String({
       description:
-        'Permission mode: "default", "plan" (read-only), or "full" (auto-approve all). Defaults to "default".',
+        'Permission mode: "default" or "plan" (read-only). "full" is blocked by security policy.',
     }),
   ),
   timeout: Type.Optional(
     Type.Number({
-      description: "Timeout in seconds (default 300).",
+      description: "Timeout in seconds (default 300, max enforced by security policy).",
     }),
   ),
 });
@@ -41,7 +41,13 @@ export function createClaudeExecTool() {
         return errorResult("task is required");
       }
 
-      const timeoutMs = (timeout ?? 300) * 1000;
+      const pmErr = validatePermissionMode(permission_mode);
+      if (pmErr) return errorResult(pmErr);
+
+      const wdErr = validateWorkdir(workdir);
+      if (wdErr) return errorResult(wdErr);
+
+      const timeoutMs = clampTimeout(timeout, 300);
       const args: string[] = ["--print"];
 
       if (permission_mode && permission_mode !== "default") {

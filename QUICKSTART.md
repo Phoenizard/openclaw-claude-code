@@ -165,31 +165,58 @@ openclaw plugins list
 
 ---
 
-## 第五步：配置 Agent 允许使用 Claude Code 工具
+## 第五步：配置安全策略与 Agent 权限
 
-编辑 `~/.openclaw/openclaw.json`，添加 agent 和工具权限：
+### 5.1 安全策略（代码级强制执行）
+
+插件通过 `plugins.entries.claude-code.config` 配置安全策略，**所有限制在代码中强制执行**，LLM 无法绕过：
+
+| 策略 | 默认值 | 说明 |
+|------|--------|------|
+| `allowedPaths` | `[]`（全部拒绝） | Claude Code 允许操作的目录白名单，路径解析后检查（防 `../../` 穿越） |
+| `blockedPermissionModes` | `["full"]` | 禁止的权限模式，`full` 会自动批准一切危险操作 |
+| `maxTimeoutSecs` | `600` | 超时硬上限，请求值超过此值会被 clamp |
+| `maxConcurrent` | `2` | 最大并发 claude 进程数，防止资源耗尽 |
+
+**关键：`allowedPaths` 默认为空，即插件装好后所有 workdir 请求都会被拒绝，必须显式配置后才可用。**
+
+### 5.2 完整配置示例
+
+编辑 `~/.openclaw/openclaw.json`：
 
 ```jsonc
 {
+  "plugins": {
+    "entries": {
+      "claude-code": {
+        "enabled": true,
+        "config": {
+          // 只允许在这些目录下操作（支持 ~）
+          "allowedPaths": ["~/Workplace/my-project", "~/Workplace/another-project"],
+          // 禁止 full 模式（自动批准一切）
+          "blockedPermissionModes": ["full"],
+          // 超时硬上限 10 分钟
+          "maxTimeoutSecs": 600,
+          // 最多同时 2 个 claude 进程
+          "maxConcurrent": 2
+        }
+      }
+    }
+  },
   "agents": {
     "list": [
       {
         "id": "main",
         "default": true,
         "tools": {
+          // 按需暴露工具 — 最小权限：只给 claude_plan
+          // 需要写入时再加 claude_exec，需要并行时再加 claude_teams
           "allow": ["claude_plan", "claude_exec", "claude_teams"]
         }
       }
     ],
     "defaults": {
       "workspace": "~/.openclaw/workspace"
-    }
-  },
-  "approvals": {
-    "exec": {
-      "allowlist": [
-        { "pattern": "claude" }
-      ]
     }
   },
   "channels": {
@@ -202,6 +229,14 @@ openclaw plugins list
   }
 }
 ```
+
+### 5.3 安全分级建议
+
+| 级别 | tools.allow | allowedPaths | blockedPermissionModes |
+|------|-------------|--------------|----------------------|
+| 只读（最安全） | `["claude_plan"]` | 按需配置 | `["full"]` |
+| 标准开发 | `["claude_plan", "claude_exec"]` | 限定项目目录 | `["full"]` |
+| 完整功能 | 全部三个 | 限定项目目录 | `["full"]` |
 
 重启 Gateway：
 

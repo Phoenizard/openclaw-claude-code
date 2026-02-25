@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { runClaude, textResult, errorResult } from "./shared.js";
+import { runClaude, textResult, errorResult, validateWorkdir, clampTimeout } from "./shared.js";
 import type { ClaudeResult } from "./shared.js";
 
 const TeamsToolSchema = Type.Object({
@@ -15,7 +15,7 @@ const TeamsToolSchema = Type.Object({
   ),
   timeout: Type.Optional(
     Type.Number({
-      description: "Timeout in seconds (default 600, since teams tasks tend to be longer).",
+      description: "Timeout in seconds (default 600, max enforced by security policy).",
     }),
   ),
 });
@@ -38,7 +38,10 @@ export function createClaudeTeamsTool() {
         return errorResult("task is required");
       }
 
-      const timeoutMs = (timeout ?? 600) * 1000;
+      const wdErr = validateWorkdir(workdir);
+      if (wdErr) return errorResult(wdErr);
+
+      const timeoutMs = clampTimeout(timeout, 600);
       const args = ["--print", task.trim()];
       const env: Record<string, string> = {
         CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",

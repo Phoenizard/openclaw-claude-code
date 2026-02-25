@@ -5,6 +5,25 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "allowedPaths": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Directories where Claude Code is allowed to operate. Supports ~. Empty = deny all."
+      },
+      "maxTimeoutSecs": {
+        "type": "number",
+        "description": "Hard cap on timeout in seconds (default 600)."
+      },
+      "maxConcurrent": {
+        "type": "number",
+        "description": "Max concurrent claude processes (default 2)."
+      },
+      "blockedPermissionModes": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Permission modes to block (default [\"full\"])."
+      }
+    }
   }
 }

@@ -1,24 +1,123 @@
 import { spawn } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export type ClaudeResult = {
   content: Array<{ type: "text"; text: string }>;
   details?: unknown;
 };
 
-/**
- * Resolve the claude binary path.
- * Prefers `claude` on PATH; falls back to common install locations.
- */
+export type SecurityPolicy = {
+  /** Allowed working directories (resolved to absolute paths). Empty = deny all. */
+  allowedPaths: string[];
+  /** Maximum timeout in seconds. Requests above this are clamped. */
+  maxTimeoutSecs: number;
+  /** Maximum concurrent claude processes. */
+  maxConcurrent: number;
+  /** Blocked permission modes (e.g. ["full"]). */
+  blockedPermissionModes: string[];
+};
+
+// ---------------------------------------------------------------------------
+// Defaults — secure by default, loosened via plugin config
+// ---------------------------------------------------------------------------
+
+const DEFAULT_POLICY: SecurityPolicy = {
+  allowedPaths: [],           // empty = must configure explicitly
+  maxTimeoutSecs: 600,        // 10 min hard cap
+  maxConcurrent: 2,
+  blockedPermissionModes: ["full"],
+};
+
+let _policy: SecurityPolicy = { ...DEFAULT_POLICY };
+
+export function setSecurityPolicy(partial: Partial<SecurityPolicy>): void {
+  _policy = { ...DEFAULT_POLICY, ...partial };
+  // Resolve ~ and ensure absolute
+  _policy.allowedPaths = _policy.allowedPaths.map((p) =>
+    resolvePath(p.replace(/^~/, homedir())),
+  );
+}
+
+export function getSecurityPolicy(): Readonly<SecurityPolicy> {
+  return _policy;
+}
+
+// ---------------------------------------------------------------------------
+// Path validation — resolve then check prefix match against allowlist
+// ---------------------------------------------------------------------------
+
+export function validateWorkdir(workdir: string | undefined): string | null {
+  if (!workdir) return null; // will use process.cwd(), caller decides if ok
+
+  const resolved = resolvePath(workdir.replace(/^~/, homedir()));
+
+  if (_policy.allowedPaths.length === 0) {
+    return `workdir rejected: no allowedPaths configured in plugin security policy`;
+  }
+
+  const allowed = _policy.allowedPaths.some(
+    (prefix) => resolved === prefix || resolved.startsWith(prefix + "/"),
+  );
+  if (!allowed) {
+    return `workdir rejected: "${resolved}" is not under any allowed path [${_policy.allowedPaths.join(", ")}]`;
+  }
+
+  return null; // ok
+}
+
+// ---------------------------------------------------------------------------
+// Permission mode validation
+// ---------------------------------------------------------------------------
+
+export function validatePermissionMode(mode: string | undefined): string | null {
+  if (!mode) return null;
+  if (_policy.blockedPermissionModes.includes(mode)) {
+    return `permission mode "${mode}" is blocked by security policy`;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Timeout clamping
+// ---------------------------------------------------------------------------
+
+export function clampTimeout(requestedSecs: number | undefined, defaultSecs: number): number {
+  const secs = requestedSecs ?? defaultSecs;
+  return Math.min(Math.max(1, secs), _policy.maxTimeoutSecs) * 1000;
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency guard
+// ---------------------------------------------------------------------------
+
+let _running = 0;
+
+function acquireSlot(): string | null {
+  if (_running >= _policy.maxConcurrent) {
+    return `concurrency limit reached (${_policy.maxConcurrent} claude processes already running)`;
+  }
+  _running++;
+  return null;
+}
+
+function releaseSlot(): void {
+  _running = Math.max(0, _running - 1);
+}
+
+// ---------------------------------------------------------------------------
+// Core: spawn claude
+// ---------------------------------------------------------------------------
+
 export function resolveClaudeBin(): string {
   return "claude";
 }
 
-/**
- * Spawn `claude` with the given args and env overrides.
- * Collects stdout+stderr and resolves when the process exits.
- * Rejects if the process fails to start or exits with a non-zero code.
- */
-export function runClaude(params: {
+export async function runClaude(params: {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
@@ -26,30 +125,41 @@ export function runClaude(params: {
 }): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   const { args, cwd, env, timeoutMs = 300_000 } = params;
 
-  return new Promise((resolve, reject) => {
-    const proc = spawn(resolveClaudeBin(), args, {
-      cwd: cwd || process.cwd(),
-      env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeoutMs,
-    });
+  const slotErr = acquireSlot();
+  if (slotErr) throw new Error(slotErr);
 
-    const chunks: Buffer[] = [];
-    const errChunks: Buffer[] = [];
+  try {
+    return await new Promise((resolve, reject) => {
+      const proc = spawn(resolveClaudeBin(), args, {
+        cwd: cwd || process.cwd(),
+        env: { ...process.env, ...env },
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: timeoutMs,
+      });
 
-    proc.stdout.on("data", (d: Buffer) => chunks.push(d));
-    proc.stderr.on("data", (d: Buffer) => errChunks.push(d));
+      const chunks: Buffer[] = [];
+      const errChunks: Buffer[] = [];
 
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      resolve({
-        stdout: Buffer.concat(chunks).toString("utf-8"),
-        stderr: Buffer.concat(errChunks).toString("utf-8"),
-        exitCode: code,
+      proc.stdout.on("data", (d: Buffer) => chunks.push(d));
+      proc.stderr.on("data", (d: Buffer) => errChunks.push(d));
+
+      proc.on("error", reject);
+      proc.on("close", (code) => {
+        resolve({
+          stdout: Buffer.concat(chunks).toString("utf-8"),
+          stderr: Buffer.concat(errChunks).toString("utf-8"),
+          exitCode: code,
+        });
       });
     });
-  });
+  } finally {
+    releaseSlot();
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Result helpers
+// ---------------------------------------------------------------------------
 
 export function textResult(text: string, details?: unknown): ClaudeResult {
   return {

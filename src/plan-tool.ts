@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { runClaude, textResult, errorResult } from "./shared.js";
+import { runClaude, textResult, errorResult, validateWorkdir, clampTimeout } from "./shared.js";
 import type { ClaudeResult } from "./shared.js";
 
 const PlanToolSchema = Type.Object({
@@ -13,7 +13,7 @@ const PlanToolSchema = Type.Object({
   ),
   timeout: Type.Optional(
     Type.Number({
-      description: "Timeout in seconds (default 300).",
+      description: "Timeout in seconds (default 300, max enforced by security policy).",
     }),
   ),
 });
@@ -36,7 +36,10 @@ export function createClaudePlanTool() {
         return errorResult("task is required");
       }
 
-      const timeoutMs = (timeout ?? 300) * 1000;
+      const wdErr = validateWorkdir(workdir);
+      if (wdErr) return errorResult(wdErr);
+
+      const timeoutMs = clampTimeout(timeout, 300);
       const args = ["--permission-mode", "plan", "--print", task.trim()];
 
       try {
