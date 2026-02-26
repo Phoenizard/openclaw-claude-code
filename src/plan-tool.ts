@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { runClaude, textResult, errorResult, validateWorkdir, clampTimeout } from "./shared.js";
+import { runClaudeWithLog, textResult, errorResult, validateWorkdir, clampTimeout } from "./shared.js";
 import type { ClaudeResult } from "./shared.js";
 
 const PlanToolSchema = Type.Object({
@@ -25,7 +25,9 @@ export function createClaudePlanTool() {
     description:
       "Run Claude Code in plan (read-only) mode. Claude Code can read/search code, fetch web pages, " +
       "and analyze the codebase, but cannot create, edit, or delete files. " +
-      "Use this for architecture analysis, code review, and implementation planning.",
+      "Use this for architecture analysis, code review, and implementation planning. " +
+      "IMPORTANT: The result includes a `logFile` path. " +
+      "ALWAYS tell the user they can run `tail -f <logFile>` to monitor execution in real-time.",
     parameters: PlanToolSchema,
     async execute(
       _toolCallId: string,
@@ -43,16 +45,17 @@ export function createClaudePlanTool() {
       const args = ["--permission-mode", "plan", "--print", task.trim()];
 
       try {
-        const result = await runClaude({ args, cwd: wd.resolved, timeoutMs });
+        const result = await runClaudeWithLog({ args, cwd: wd.resolved, timeoutMs });
 
-        if (result.exitCode !== 0) {
+        if (result.exitCode !== 0 && result.exitCode !== null) {
           const errMsg = result.stderr.trim() || result.stdout.trim() || "Claude Code exited with non-zero code";
           return errorResult(`Claude Code plan failed (exit ${result.exitCode}): ${errMsg}`);
         }
 
-        return textResult(result.stdout.trim() || "(no output)", {
-          mode: "plan",
-          exitCode: result.exitCode,
+        const header = `📋 Log file: ${result.logFile}\nRun \`tail -f ${result.logFile}\` to monitor.\n\n---\n\n`;
+
+        return textResult(header + (result.stdout.trim() || "(no output)"), {
+          logFile: result.logFile,
         });
       } catch (err) {
         return errorResult(`Failed to run Claude Code: ${err instanceof Error ? err.message : String(err)}`);

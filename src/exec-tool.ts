@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { runClaude, textResult, errorResult, validateWorkdir, clampTimeout } from "./shared.js";
+import { runClaudeWithLog, textResult, errorResult, validateWorkdir, clampTimeout } from "./shared.js";
 import type { ClaudeResult } from "./shared.js";
 
 const ExecToolSchema = Type.Object({
@@ -25,7 +25,9 @@ export function createClaudeExecTool() {
     description:
       "Run Claude Code to execute a coding task. Claude Code can read, edit, create files, and run shell commands. " +
       "Use this for implementing features, fixing bugs, refactoring code, and other development tasks. " +
-      "Operates in full-permission mode within whitelisted directories only.",
+      "Operates in full-permission mode within whitelisted directories only. " +
+      "IMPORTANT: The result includes a `logFile` path. " +
+      "ALWAYS tell the user they can run `tail -f <logFile>` to monitor execution in real-time.",
     parameters: ExecToolSchema,
     async execute(
       _toolCallId: string,
@@ -40,22 +42,20 @@ export function createClaudeExecTool() {
       if (wd.error) return errorResult(wd.error);
 
       const timeoutMs = clampTimeout(timeout, 300);
-      // Non-interactive mode requires "full" to auto-approve write operations.
-      // Security is enforced by allowedPaths (checked before spawn) — claude
-      // can only operate within whitelisted directories.
       const args: string[] = ["--print", "--permission-mode", "bypassPermissions", task.trim()];
 
       try {
-        const result = await runClaude({ args, cwd: wd.resolved, timeoutMs });
+        const result = await runClaudeWithLog({ args, cwd: wd.resolved, timeoutMs });
 
-        if (result.exitCode !== 0) {
+        if (result.exitCode !== 0 && result.exitCode !== null) {
           const errMsg = result.stderr.trim() || result.stdout.trim() || "Claude Code exited with non-zero code";
           return errorResult(`Claude Code exec failed (exit ${result.exitCode}): ${errMsg}`);
         }
 
-        return textResult(result.stdout.trim() || "(no output)", {
-          mode: "full",
-          exitCode: result.exitCode,
+        const header = `📋 Log file: ${result.logFile}\nRun \`tail -f ${result.logFile}\` to monitor.\n\n---\n\n`;
+
+        return textResult(header + (result.stdout.trim() || "(no output)"), {
+          logFile: result.logFile,
         });
       } catch (err) {
         return errorResult(`Failed to run Claude Code: ${err instanceof Error ? err.message : String(err)}`);

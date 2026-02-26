@@ -4,6 +4,7 @@ import { createClaudePlanTool } from "./src/plan-tool.js";
 import { createClaudeExecTool } from "./src/exec-tool.js";
 import { createClaudeTeamsTool } from "./src/teams-tool.js";
 
+
 const plugin = {
   id: "claude-code",
   name: "Claude Code",

@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { resolve as resolvePath, join } from "node:path";
 import { homedir } from "node:os";
-import { readdirSync } from "node:fs";
+import { readdirSync, createWriteStream, mkdirSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -104,7 +105,7 @@ export function clampTimeout(requestedSecs: number | undefined, defaultSecs: num
 
 let _running = 0;
 
-function acquireSlot(): string | null {
+export function acquireSlot(): string | null {
   if (_running >= _policy.maxConcurrent) {
     return `concurrency limit reached (${_policy.maxConcurrent} claude processes already running)`;
   }
@@ -112,7 +113,7 @@ function acquireSlot(): string | null {
   return null;
 }
 
-function releaseSlot(): void {
+export function releaseSlot(): void {
   _running = Math.max(0, _running - 1);
 }
 
@@ -188,6 +189,171 @@ export async function runClaude(params: {
           exitCode: code,
         });
       });
+    });
+  } finally {
+    releaseSlot();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Run claude with real-time log file for monitoring
+// ---------------------------------------------------------------------------
+
+const LOG_DIR = "/tmp/claude-logs";
+
+export async function runClaudeWithLog(params: {
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+}): Promise<{ stdout: string; stderr: string; exitCode: number | null; logFile: string }> {
+  const { args, cwd, env, timeoutMs = 300_000 } = params;
+
+  const slotErr = acquireSlot();
+  if (slotErr) throw new Error(slotErr);
+
+  const sessionId = `claude-${randomBytes(4).toString("hex")}`;
+  const logFile = join(LOG_DIR, `${sessionId}.log`);
+
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+  } catch {}
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const authEnv: Record<string, string> = {};
+      if (_policy.claudeOauthToken) {
+        authEnv.CLAUDE_CODE_OAUTH_TOKEN = _policy.claudeOauthToken;
+      }
+
+      const proc = spawn(resolveClaudeBin(), args, {
+        cwd: cwd || process.cwd(),
+        env: { ...process.env, ...authEnv, ...env },
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: timeoutMs,
+      });
+
+      const logStream = createWriteStream(logFile, { flags: "a" });
+      const chunks: Buffer[] = [];
+      const errChunks: Buffer[] = [];
+
+      proc.stdout.on("data", (d: Buffer) => {
+        chunks.push(d);
+        logStream.write(d);
+      });
+      proc.stderr.on("data", (d: Buffer) => {
+        errChunks.push(d);
+        logStream.write(d);
+      });
+
+      proc.on("error", (err) => {
+        logStream.end();
+        reject(err);
+      });
+      proc.on("close", (code) => {
+        logStream.end();
+        resolve({
+          stdout: Buffer.concat(chunks).toString("utf-8"),
+          stderr: Buffer.concat(errChunks).toString("utf-8"),
+          exitCode: code,
+          logFile,
+        });
+      });
+    });
+  } finally {
+    releaseSlot();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tmux session: run claude --print inside tmux for live monitoring
+// ---------------------------------------------------------------------------
+
+/**
+ * Run Claude Code in a named tmux session so users can `tmux attach -t <name>`
+ * to watch execution in real-time. Uses reliable `--print` mode internally.
+ *
+ * Returns the tmux session name alongside the normal stdout/stderr/exitCode.
+ */
+export async function runClaudeInTmux(params: {
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+}): Promise<{ stdout: string; stderr: string; exitCode: number | null; tmuxSession: string }> {
+  const { args, cwd, env, timeoutMs = 300_000 } = params;
+
+  const slotErr = acquireSlot();
+  if (slotErr) throw new Error(slotErr);
+
+  const sessionId = `claude-${randomBytes(4).toString("hex")}`;
+  const outFile = `/tmp/${sessionId}.out`;
+  const errFile = `/tmp/${sessionId}.err`;
+  const exitFile = `/tmp/${sessionId}.exit`;
+
+  try {
+    const bin = resolveClaudeBin();
+    const escapedArgs = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+
+    // Build env exports for tmux
+    const authEnv: Record<string, string> = {};
+    if (_policy.claudeOauthToken) {
+      authEnv.CLAUDE_CODE_OAUTH_TOKEN = _policy.claudeOauthToken;
+    }
+    const allEnv = { ...authEnv, ...env };
+    const envExports = Object.entries(allEnv)
+      .map(([k, v]) => `export ${k}='${v.replace(/'/g, "'\\''")}'`)
+      .join("; ");
+
+    // Command that runs inside tmux: claude --print, tee output, record exit code
+    const innerCmd = [
+      envExports,
+      `${bin} ${escapedArgs} 2>"${errFile}" | tee "${outFile}"`,
+      `echo $? > "${exitFile}"`,
+    ].filter(Boolean).join("; ");
+
+    // Create tmux session
+    execSync(
+      `tmux new-session -d -s "${sessionId}" -x 200 -y 50 'bash -l -c ${JSON.stringify(innerCmd)}'`,
+      { cwd: cwd || process.cwd(), env: { ...process.env, ...allEnv } },
+    );
+
+    // Poll for completion
+    return await new Promise((resolve, reject) => {
+      const startTime = Date.now();
+
+      const poll = setInterval(() => {
+        // Check if tmux session still exists
+        try {
+          execSync(`tmux has-session -t "${sessionId}" 2>/dev/null`);
+        } catch {
+          // Session ended — read results
+          clearInterval(poll);
+
+          const { readFileSync } = require("node:fs") as typeof import("node:fs");
+          let stdout = "";
+          let stderr = "";
+          let exitCode: number | null = null;
+
+          try { stdout = readFileSync(outFile, "utf-8"); } catch {}
+          try { stderr = readFileSync(errFile, "utf-8"); } catch {}
+          try { exitCode = parseInt(readFileSync(exitFile, "utf-8").trim(), 10); } catch {}
+
+          // Cleanup temp files
+          try { execSync(`rm -f "${outFile}" "${errFile}" "${exitFile}"`); } catch {}
+
+          resolve({ stdout, stderr, exitCode, tmuxSession: sessionId });
+          return;
+        }
+
+        // Check timeout
+        if (Date.now() - startTime > timeoutMs) {
+          clearInterval(poll);
+          try { execSync(`tmux kill-session -t "${sessionId}" 2>/dev/null`); } catch {}
+          try { execSync(`rm -f "${outFile}" "${errFile}" "${exitFile}"`); } catch {}
+          reject(new Error(`timeout after ${timeoutMs / 1000}s`));
+        }
+      }, 2000);
     });
   } finally {
     releaseSlot();
