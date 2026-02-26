@@ -1,8 +1,16 @@
 {
-  "name": "claude-code",
-  "version": "0.1.0",
-  "private": true,
+  "name": "openclaw-claude-code",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin that integrates Claude Code — analyze, plan, and execute coding tasks from Slack",
+  "license": "MIT",
+  "author": "Phoenizard",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Phoenizard/openclaw-claude-code.git"
+  },
+  "keywords": ["openclaw", "claude-code", "slack", "ai-agent", "plugin"],
   "type": "module",
+  "files": ["index.ts", "src/", "!src/__tests__/", "openclaw.plugin.json", "README.md", "README.zh-CN.md", "LICENSE"],
   "dependencies": {
     "@sinclair/typebox": "0.34.48"
   },
